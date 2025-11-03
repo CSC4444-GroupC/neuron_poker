@@ -16,6 +16,7 @@ dependencies = [
     "mpld3>=0.5.10,<0.6",
     "setuptools>=80.9.0",
     "gymnasium>=1.2.0",
+    "stable-baselines3>=2.0.0",
 ]
 
 [project.scripts]

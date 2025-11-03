@@ -193,7 +193,10 @@ class HoldemTable(Env):
                 "initial_player_autoplay"
             )  # kick off the first action after bb by an autoplay agent
 
-        return self.array_everything, self.info
+        obs = self.array_everything.astype(np.float32)
+        obs = obs.clip(self.observation_space.low, self.observation_space.high)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        return obs, self.info
 
     def step(self, action):  # pylint: disable=arguments-differ
         """
@@ -204,7 +207,7 @@ class HoldemTable(Env):
 
         """
         # loop over step function, calling the agent's action method
-        # until either the env id sone, or an agent is just a shell and
+        # until either the env is done, or an agent is just a shell and
         # and will get a call from to the step function externally (e.g. via
         # keras-rl
         self.reward = 0
@@ -238,7 +241,10 @@ class HoldemTable(Env):
             log.debug(
                 f"Previous action reward for seat {self.acting_agent}: {self.reward}"
             )
-        return self.array_everything, self.reward, self.done, False, self.info
+        obs = self.array_everything.astype(np.float32)
+        obs = obs.clip(self.observation_space.low, self.observation_space.high)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        return obs, self.reward, self.done, False, self.info
 
     def _execute_step(self, action):
         self._process_decision(action)
@@ -347,6 +353,10 @@ class HoldemTable(Env):
             "community_data": self.community_data.__dict__,
             "stage_data": [stage.__dict__ for stage in self.stage_data],
             "legal_moves": self.legal_moves,
+            "action_mask": np.array(
+                [action in self.legal_moves for action in list(Action)[:-2]],
+                dtype=bool,
+            ),
         }
 
         # Update observation space properly as a Box space after first observation
@@ -626,6 +636,31 @@ class HoldemTable(Env):
         self.players.append(player)
         self.player_status = [True] * len(self.players)
         self.player_pots = [0] * len(self.players)
+
+    def replace_player(self, seat_idx, new_agent):
+        """
+        Safely replace a player at seat_idx with a new agent.
+        WARNING: Only call after environment initialization, NOT during training or a live hand.
+        Updates player object and agent, preserves stack and seat assignment.
+        """
+        if seat_idx < 0 or seat_idx >= len(self.players):
+            raise IndexError(f"Invalid seat_idx: {seat_idx}")
+        old_player = self.players[seat_idx]
+
+        new_player = PlayerShell(stack_size=old_player.stack, name=new_agent.name)
+        new_player.agent_obj = new_agent
+        new_player.seat = seat_idx
+        new_player.stack = old_player.stack
+        # Replace in players list
+        self.players[seat_idx] = new_player
+        # If you have per-player arrays, update them if needed (e.g., player_status, player_pots)
+        # Most arrays are already sized correctly, so no need to resize
+        # If you have custom per-player data, update here
+        # Example: self.player_status[seat_idx] = True
+        # If you need to update agent references elsewhere, do so here
+        # If you have a player_cycle or similar, update its reference if needed
+        if hasattr(self, "player_cycle") and self.player_cycle is not None:
+            self.player_cycle.players = self.players
 
     def _end_round(self):
         """End of preflop, flop, turn or river"""
