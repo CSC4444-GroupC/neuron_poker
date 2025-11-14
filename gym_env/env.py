@@ -202,8 +202,12 @@ class HoldemTable(Env):
         """
         Next player makes a move and a new environment is observed.
 
-        Args:
-            action: Used for testing only. Needs to be of Action type
+        :param action (Action): Used for testing only. Needs to be of Action type
+        :return obs: The observation
+        :return reward: The reward
+        :return done: Whether the episode is done
+        :return truncated: Whether the episode is truncated
+        :return info: The info dict
 
         """
         # loop over step function, calling the agent's action method
@@ -387,7 +391,7 @@ class HoldemTable(Env):
         if self.done:
             won = 1 if not self._agent_is_autoplay(idx=self.winner_ix) else -1
             self.reward = self.initial_stacks * len(self.players) * won
-            log.debug(f"Keras-rl agent has reward {self.reward}")
+            log.debug(f"RL agent has reward {self.reward}")
 
         elif len(self.funds_history) > 1:
             self.reward = (
@@ -637,31 +641,6 @@ class HoldemTable(Env):
         self.player_status = [True] * len(self.players)
         self.player_pots = [0] * len(self.players)
 
-    def replace_player(self, seat_idx, new_agent):
-        """
-        Safely replace a player at seat_idx with a new agent.
-        WARNING: Only call after environment initialization, NOT during training or a live hand.
-        Updates player object and agent, preserves stack and seat assignment.
-        """
-        if seat_idx < 0 or seat_idx >= len(self.players):
-            raise IndexError(f"Invalid seat_idx: {seat_idx}")
-        old_player = self.players[seat_idx]
-
-        new_player = PlayerShell(stack_size=old_player.stack, name=new_agent.name)
-        new_player.agent_obj = new_agent
-        new_player.seat = seat_idx
-        new_player.stack = old_player.stack
-        # Replace in players list
-        self.players[seat_idx] = new_player
-        # If you have per-player arrays, update them if needed (e.g., player_status, player_pots)
-        # Most arrays are already sized correctly, so no need to resize
-        # If you have custom per-player data, update here
-        # Example: self.player_status[seat_idx] = True
-        # If you need to update agent references elsewhere, do so here
-        # If you have a player_cycle or similar, update its reference if needed
-        if hasattr(self, "player_cycle") and self.player_cycle is not None:
-            self.player_cycle.players = self.players
-
     def _end_round(self):
         """End of preflop, flop, turn or river"""
         self._close_round()
@@ -857,7 +836,7 @@ class HoldemTable(Env):
         )
 
         for i in range(len(self.players)):
-            degrees = 360 / len(self.players)
+            degrees = 360 / len(self.players) * i
             radian = degrees * (np.pi / 180)
             x = (face_radius + table_radius) * np.cos(radian) + screen_width / 2
             y = (face_radius + table_radius) * np.sin(radian) + screen_height / 2

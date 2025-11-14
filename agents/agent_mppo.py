@@ -2,7 +2,6 @@
 
 import numpy as np
 from gym_env.enums import Action
-from icecream import ic
 from sb3_contrib.ppo_mask import MaskablePPO
 
 
