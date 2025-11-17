@@ -130,6 +130,14 @@ class HoldemTable(Env):
         self.funds_plot = funds_plot
         self.max_raises_per_player_round = max_raises_per_player_round
         self.calculate_equity = calculate_equity
+        self.reward_weights = {
+            "immediate": 1.0,
+            "ev": 2.0,
+            "terminal": 5.0,
+            "variance_penalty": 0.0,
+        }
+        # scaling denominator to normalize chips to ~O(1)
+        self._reward_scale = float(self.big_blind * 100)
 
         # pots
         self.community_pot = 0
@@ -375,32 +383,143 @@ class HoldemTable(Env):
         if self.render_switch:
             self.render()
 
+    # def _calculate_reward(self, last_action):
+    #     """
+    #     Preliminiary implementation of reward function
+
+    #     - Currently missing potential additional winnings from future contributions
+    #     """
+    #     # if last_action == Action.FOLD:
+    #     #     self.reward = -(
+    #     #             self.community_pot + self.current_round_pot)
+    #     # else:
+    #     #     self.reward = self.player_data.equity_to_river_alive * (self.community_pot + self.current_round_pot) - \
+    #     #                   (1 - self.player_data.equity_to_river_alive) * self.player_pots[self.current_player.seat]
+    #     _ = last_action
+    #     if self.done:
+    #         won = 1 if not self._agent_is_autoplay(idx=self.winner_ix) else -1
+    #         self.reward = self.initial_stacks * len(self.players) * won
+    #         log.debug(f"Keras-rl agent has reward {self.reward}")
+
+    #     elif len(self.funds_history) > 1:
+    #         self.reward = (
+    #             self.funds_history.iloc[-1, self.acting_agent]
+    #             - self.funds_history.iloc[-2, self.acting_agent]
+    #         )
+
+    #     else:
+    #         pass
+
     def _calculate_reward(self, last_action):
         """
-        Preliminiary implementation of reward function
-
-        - Currently missing potential additional winnings from future contributions
+        Improved reward shaping:
+        - immediate reward: normalized stack delta (after-action - before-action)
+        - EV reward: estimated expected value of continuing based on equity and pot odds
+        - terminal reward: normalized net change vs initial stack if the episode ended
+        The parts are weighted via self.reward_weights and normalized by self._reward_scale.
         """
-        # if last_action == Action.FOLD:
-        #     self.reward = -(
-        #             self.community_pot + self.current_round_pot)
-        # else:
-        #     self.reward = self.player_data.equity_to_river_alive * (self.community_pot + self.current_round_pot) - \
-        #                   (1 - self.player_data.equity_to_river_alive) * self.player_pots[self.current_player.seat]
-        _ = last_action
-        if self.done:
-            won = 1 if not self._agent_is_autoplay(idx=self.winner_ix) else -1
-            self.reward = self.initial_stacks * len(self.players) * won
-            log.debug(f"RL agent has reward {self.reward}")
+        # default
+        self.reward = 0.0
+        idx = self.acting_agent
 
-        elif len(self.funds_history) > 1:
-            self.reward = (
-                self.funds_history.iloc[-1, self.acting_agent]
-                - self.funds_history.iloc[-2, self.acting_agent]
+        # Terminal handling: give a clear final objective when game is over
+        if self.done:
+            # reward is normalized net gain/loss relative to initial stack
+            final_stack = self.players[idx].stack
+            net_change = final_stack - self.initial_stacks
+            terminal_reward = (net_change / self._reward_scale) * self.reward_weights[
+                "terminal"
+            ]
+            self.reward = terminal_reward
+            log.debug(f"Terminal reward for seat {idx}: {self.reward}")
+            return
+
+        # 1) Immediate stack delta (use player's temp_stack history if available)
+        prev_stack = None
+        try:
+            ts = self.players[idx].temp_stack
+            if isinstance(ts, list) and len(ts) >= 2:
+                prev_stack = ts[-2]  # previous stack before the most recent action
+            elif isinstance(ts, list) and len(ts) == 1:
+                prev_stack = self.initial_stacks
+        except Exception:
+            prev_stack = None
+
+        if prev_stack is None:
+            # Fallback (use initial stacks so the delta isn't huge)
+            prev_stack = self.initial_stacks
+
+        current_stack = self.players[idx].stack
+        immediate_delta = (current_stack - prev_stack) / self._reward_scale
+        immediate_reward = immediate_delta * self.reward_weights["immediate"]
+
+        # 2) EV shaping: estimate expected value of continuing vs folding/calling
+        # pot size before action (approx) and amount to call
+        pot_size = float(self.community_pot + self.current_round_pot)
+        # estimate amount to call for this player (min_call - contributed so far)
+        contributed = (
+            float(self.player_pots[idx]) if self.player_pots is not None else 0.0
+        )
+        amount_to_call = max(0.0, float(self.min_call) - contributed)
+
+        # Player equity to river: prefer use player_data/equity fields
+        equity = float(self.player_data.equity_to_river_alive)
+        if np.isnan(equity) or equity is None:
+            equity = (
+                float(self.current_player.equity_alive)
+                if hasattr(self, "current_player")
+                and getattr(self.current_player, "equity_alive", None) is not None
+                else 0.5
             )
 
-        else:
-            pass
+        # expected value of calling/continuing (simplified): EV = equity * pot - (1-equity) * call
+        ev_raw = equity * pot_size - (1.0 - equity) * amount_to_call
+        ev_norm = ev_raw / self._reward_scale
+        ev_reward = ev_norm * self.reward_weights["ev"]
+
+        # 3) Action-specific shaping (encourage folding when EV negative; discourage
+        #    calling when pot odds are unfavourable)
+        action_shaping = 0.0
+        try:
+            action_enum = Action(last_action)
+        except Exception:
+            # last_action might be a sentinel (like 'initial_player_autoplay'); ignore
+            action_enum = None
+
+        # pot odds = amount_to_call / (pot_size + amount_to_call) if amount_to_call > 0
+        pot_odds = (
+            (amount_to_call / (pot_size + amount_to_call))
+            if (amount_to_call > 0 and (pot_size + amount_to_call) > 0)
+            else 0.0
+        )
+
+        # If agent called or checked, encourage calls when equity >= pot_odds
+        if action_enum in (Action.CALL, Action.CHECK):
+            if equity >= pot_odds:
+                action_shaping += 0.1 * self.reward_weights["ev"]
+            else:
+                action_shaping -= 0.2 * self.reward_weights["ev"]
+
+        # If agent folded but equity >> pot_odds, penalize fold slightly (indicates potential mistake)
+        if action_enum == Action.FOLD:
+            if equity > pot_odds + 0.05:
+                action_shaping -= 0.3 * self.reward_weights["ev"]
+
+        # 4) Optional variance penalty to discourage very large swings in stack
+        variance_penalty = -self.reward_weights.get("variance_penalty", 0.0) * abs(
+            immediate_delta
+        )
+
+        # Compose the final reward
+        self.reward = immediate_reward + ev_reward + action_shaping + variance_penalty
+
+        # Logging for debugging and tuning
+        log.debug(
+            f"Reward components for seat {idx}: immediate={immediate_reward:.4f}, "
+            f"ev={ev_reward:.4f}, action_shaping={action_shaping:.4f}, "
+            f"variance_penalty={variance_penalty:.4f}, total={self.reward:.4f} "
+            f"(equity={equity:.3f}, pot={pot_size:.1f}, call={amount_to_call:.1f})"
+        )
 
     def _process_decision(self, action):  # pylint: disable=too-many-statements
         """Process the decisions that have been made by an agent."""
