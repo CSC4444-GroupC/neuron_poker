@@ -132,9 +132,9 @@ class HoldemTable(Env):
         self.calculate_equity = calculate_equity
         self.reward_weights = {
             "immediate": 1.0,
-            "ev": 2.0,
-            "terminal": 5.0,
-            "variance_penalty": 0.0,
+            "ev": 1.0,
+            "terminal": 1.0,
+            "variance_penalty": 1.0,
         }
         # scaling denominator to normalize chips to ~O(1)
         self._reward_scale = float(self.big_blind * 100)
