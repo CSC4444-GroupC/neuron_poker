@@ -180,7 +180,8 @@ class HoldemTable(Env):
             return
 
         for player in self.players:
-            player.stack = self.initial_stacks
+            if not hasattr(player, "agent_obj"):
+                player.stack = self.initial_stacks
 
         self.dealer_pos = 0
         max_steps_after_raiser = (self.max_raises_per_player_round - 1) * len(
@@ -752,10 +753,11 @@ class HoldemTable(Env):
     def add_player(self, agent):
         """Add a player to the table. Has to happen at the very beginning"""
         self.num_of_players += 1
-        player = PlayerShell(stack_size=self.initial_stacks, name=agent.name)
+        stack = getattr(agent, "stack", self.initial_stacks)
+        player = PlayerShell(stack_size=stack, name=agent.name)
         player.agent_obj = agent
         player.seat = len(self.players)  # assign next seat number to player
-        player.stack = self.initial_stacks
+        player.stack = stack
         self.players.append(player)
         self.player_status = [True] * len(self.players)
         self.player_pots = [0] * len(self.players)
