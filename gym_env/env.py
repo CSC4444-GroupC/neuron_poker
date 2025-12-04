@@ -131,10 +131,10 @@ class HoldemTable(Env):
         self.max_raises_per_player_round = max_raises_per_player_round
         self.calculate_equity = calculate_equity
         self.reward_weights = {
-            "immediate": 1.0,
+            "immediate": 0.5,
             "ev": 1.0,
             "terminal": 1.0,
-            "variance_penalty": 1.0,
+            "variance_penalty": 2.0,
         }
         # scaling denominator to normalize chips to ~O(1)
         self._reward_scale = float(self.big_blind * 100)
@@ -503,8 +503,14 @@ class HoldemTable(Env):
 
         # If agent folded but equity >> pot_odds, penalize fold slightly (indicates potential mistake)
         if action_enum == Action.FOLD:
-            if equity > pot_odds + 0.05:
-                action_shaping -= 0.3 * self.reward_weights["ev"]
+            if equity < pot_odds - 0.05:
+                action_shaping += 0.2 * self.reward_weights["ev"]
+
+        # If agent went all-in, penalize if equity is low
+        if action_enum == Action.ALL_IN:
+            # Penalize all-in if equity is low
+            if equity < 0.5:
+                action_shaping -= 0.5 * self.reward_weights["ev"]
 
         # 4) Optional variance penalty to discourage very large swings in stack
         variance_penalty = -self.reward_weights.get("variance_penalty", 0.0) * abs(
